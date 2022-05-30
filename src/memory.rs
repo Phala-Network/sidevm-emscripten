@@ -1,6 +1,6 @@
 use super::env::get_emscripten_data;
 use super::process::abort_with_message;
-use crate::EmEnv;
+use crate::{EmEnv, Result};
 use libc::{c_int, c_void, memcpy, size_t};
 // TODO: investigate max pages etc. probably in Wasm Common, maybe reexport
 use wasmer::{Pages, WASM_MAX_PAGES, WASM_MIN_PAGES, WASM_PAGE_SIZE};
@@ -69,7 +69,7 @@ pub fn _emscripten_resize_heap(ctx: &EmEnv, requested_size: u32) -> u32 {
 }
 
 /// emscripten: sbrk
-pub fn sbrk(ctx: &EmEnv, increment: i32) -> i32 {
+pub fn sbrk(ctx: &EmEnv, increment: i32) -> Result<i32> {
     debug!("emscripten::sbrk");
     // let old_dynamic_top = 0;
     // let new_dynamic_top = 0;
@@ -85,17 +85,16 @@ pub fn sbrk(ctx: &EmEnv, increment: i32) -> i32 {
         dynamictop_ptr, old_dynamic_top, new_dynamic_top, increment, total_memory
     );
     if increment > 0 && new_dynamic_top < old_dynamic_top || new_dynamic_top < 0 {
-        abort_on_cannot_grow_memory_old(ctx);
-        return -1;
+        return abort_on_cannot_grow_memory_old(ctx);
     }
     if new_dynamic_top > total_memory {
         let resized = _emscripten_resize_heap(ctx, new_dynamic_top as u32);
         if resized == 0 {
-            return -1;
+            return Ok(-1);
         }
     }
     ctx.memory(0).view::<u32>()[dynamictop_ptr].set(new_dynamic_top as u32);
-    old_dynamic_top as _
+    Ok(old_dynamic_top as _)
 }
 
 /// emscripten: getTotalMemory
@@ -115,38 +114,36 @@ pub fn enlarge_memory(_ctx: &EmEnv) -> u32 {
 }
 
 /// emscripten: abortOnCannotGrowMemory
-pub fn abort_on_cannot_grow_memory(ctx: &EmEnv, _requested_size: u32) -> u32 {
+pub fn abort_on_cannot_grow_memory(ctx: &EmEnv, _requested_size: u32) -> Result<u32> {
     debug!(
         "emscripten::abort_on_cannot_grow_memory {}",
         _requested_size
     );
-    abort_with_message(ctx, "Cannot enlarge memory arrays!");
-    0
+    abort_with_message(ctx, "Cannot enlarge memory arrays!")
 }
 
 /// emscripten: abortOnCannotGrowMemory
-pub fn abort_on_cannot_grow_memory_old(ctx: &EmEnv) -> u32 {
+pub fn abort_on_cannot_grow_memory_old(ctx: &EmEnv) -> Result<i32> {
     debug!("emscripten::abort_on_cannot_grow_memory");
-    abort_with_message(ctx, "Cannot enlarge memory arrays!");
-    0
+    abort_with_message(ctx, "Cannot enlarge memory arrays!")
 }
 
 /// emscripten: segfault
-pub fn segfault(ctx: &EmEnv) {
+pub fn segfault(ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::segfault");
-    abort_with_message(ctx, "segmentation fault");
+    abort_with_message(ctx, "segmentation fault")
 }
 
 /// emscripten: alignfault
-pub fn alignfault(ctx: &EmEnv) {
+pub fn alignfault(ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::alignfault");
-    abort_with_message(ctx, "alignment fault");
+    abort_with_message(ctx, "alignment fault")
 }
 
 /// emscripten: ftfault
-pub fn ftfault(ctx: &EmEnv) {
+pub fn ftfault(ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::ftfault");
-    abort_with_message(ctx, "Function table mask error");
+    abort_with_message(ctx, "Function table mask error")
 }
 
 /// emscripten: ___map_file

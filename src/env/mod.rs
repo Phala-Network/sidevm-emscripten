@@ -1,21 +1,15 @@
 #[cfg(unix)]
 mod unix;
 
-#[cfg(windows)]
-mod windows;
-
 #[cfg(unix)]
 pub use self::unix::*;
-
-#[cfg(windows)]
-pub use self::windows::*;
 
 use libc::c_char;
 
 use crate::{
     allocate_on_stack,
     ptr::{Array, WasmPtr},
-    EmscriptenData,
+    EmscriptenData, Exited,
 };
 
 use std::os::raw::c_int;
@@ -30,19 +24,6 @@ pub fn call_malloc(ctx: &EmEnv, size: u32) -> u32 {
         .unwrap()
         .call(size)
         .unwrap()
-}
-
-#[warn(dead_code)]
-pub fn call_malloc_with_cast<T: Copy, Ty>(ctx: &EmEnv, size: u32) -> WasmPtr<T, Ty> {
-    WasmPtr::new(call_malloc(ctx, size))
-}
-
-pub fn call_memalign(ctx: &EmEnv, alignment: u32, size: u32) -> u32 {
-    if let Some(memalign) = &get_emscripten_data(ctx).memalign_ref() {
-        memalign.call(alignment, size).unwrap()
-    } else {
-        panic!("Memalign is set to None");
-    }
 }
 
 pub fn call_memset(ctx: &EmEnv, pointer: u32, value: u32, size: u32) -> u32 {
@@ -122,10 +103,15 @@ pub fn ___build_environment(ctx: &EmEnv, environ: c_int) {
     }
 }
 
-pub fn ___assert_fail(_ctx: &EmEnv, _a: c_int, _b: c_int, _c: c_int, _d: c_int) {
+pub fn ___assert_fail(
+    _ctx: &EmEnv,
+    _a: c_int,
+    _b: c_int,
+    _c: c_int,
+    _d: c_int,
+) -> Result<(), Exited> {
     debug!("emscripten::___assert_fail {} {} {} {}", _a, _b, _c, _d);
-    // TODO: Implement like emscripten expects regarding memory/page size
-    // TODO raise an error
+    Err(Exited(-1))
 }
 
 pub fn _pathconf(ctx: &EmEnv, path_addr: c_int, name: c_int) -> c_int {

@@ -1,36 +1,33 @@
-use libc::{abort, c_int, exit, EAGAIN};
+use libc::{c_int, EAGAIN};
 
 #[cfg(not(target_os = "windows"))]
 type PidT = libc::pid_t;
 #[cfg(target_os = "windows")]
 type PidT = c_int;
 
-use crate::EmEnv;
+use crate::{EmEnv, Exited, Result};
 
-pub fn abort_with_message(ctx: &EmEnv, message: &str) {
+pub fn abort_with_message<T>(_ctx: &EmEnv, message: &str) -> Result<T> {
     debug!("emscripten::abort_with_message");
     println!("{}", message);
-    _abort(ctx);
+    Err(Exited(1))
 }
 
 /// The name of this call is `abort` but we want to avoid conflicts with libc::abort
-pub fn em_abort(ctx: &EmEnv, arg: u32) {
+pub fn em_abort(ctx: &EmEnv, arg: u32) -> Result<()> {
     debug!("emscripten::abort");
     eprintln!("Program aborted with value {}", arg);
-    _abort(ctx);
+    _abort(ctx)
 }
 
-pub fn _abort(_ctx: &EmEnv) {
+pub fn _abort(_ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::_abort");
-    unsafe {
-        abort();
-    }
+    Err(Exited(1))
 }
 
-pub fn _prctl(ctx: &EmEnv, _a: i32, _b: i32) -> i32 {
+pub fn _prctl(ctx: &EmEnv, _a: i32, _b: i32) -> Result<i32> {
     debug!("emscripten::_prctl");
-    abort_with_message(ctx, "missing function: prctl");
-    -1
+    abort_with_message(ctx, "missing function: prctl")
 }
 
 pub fn _fork(_ctx: &EmEnv) -> PidT {
@@ -51,10 +48,10 @@ pub fn _execve(_ctx: &EmEnv, _one: i32, _two: i32, _three: i32) -> i32 {
 }
 
 #[allow(unreachable_code)]
-pub fn _exit(_ctx: &EmEnv, status: c_int) {
+pub fn _exit(_ctx: &EmEnv, status: c_int) -> Result<()> {
     // -> !
     debug!("emscripten::_exit {}", status);
-    unsafe { exit(status) }
+    Err(Exited(status))
 }
 
 pub fn _kill(_ctx: &EmEnv, _one: i32, _two: i32) -> i32 {
@@ -166,18 +163,18 @@ pub fn _waitpid(_ctx: &EmEnv, _one: i32, _two: i32, _three: i32) -> i32 {
     -1
 }
 
-pub fn abort_stack_overflow(ctx: &EmEnv, _what: c_int) {
+pub fn abort_stack_overflow(ctx: &EmEnv, _what: c_int) -> Result<()> {
     debug!("emscripten::abort_stack_overflow");
     // TODO: Message incomplete. Need to finish em runtime data first
     abort_with_message(
         ctx,
         "Stack overflow! Attempted to allocate some bytes on the stack",
-    );
+    )
 }
 
-pub fn _llvm_trap(ctx: &EmEnv) {
+pub fn _llvm_trap(ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::_llvm_trap");
-    abort_with_message(ctx, "abort!");
+    abort_with_message(ctx, "trap!")
 }
 
 pub fn _llvm_eh_typeid_for(_ctx: &EmEnv, _type_info_addr: u32) -> i32 {
@@ -196,7 +193,5 @@ pub fn _popen(_ctx: &EmEnv, _one: i32, _two: i32) -> c_int {
     debug!("emscripten::_popen");
     // TODO: May need to change this Em impl to a working version
     eprintln!("Missing function: popen");
-    unsafe {
-        abort();
-    }
+    -1
 }

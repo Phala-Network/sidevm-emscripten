@@ -2,8 +2,6 @@
 
 use crate::env::get_emscripten_data;
 use crate::EmEnv;
-#[cfg(target_os = "linux")]
-use libc::getdtablesize;
 
 pub fn asm_const_i(_ctx: &EmEnv, _val: i32) -> i32 {
     debug!("emscripten::asm_const_i: {}", _val);
@@ -84,7 +82,7 @@ pub fn ___gxx_personality_v0(
 #[cfg(target_os = "linux")]
 pub fn _getdtablesize(_ctx: &EmEnv) -> i32 {
     debug!("emscripten::getdtablesize");
-    unsafe { getdtablesize() }
+    -1
 }
 #[cfg(not(target_os = "linux"))]
 pub fn _getdtablesize(_ctx: &EmEnv) -> i32 {
@@ -93,11 +91,11 @@ pub fn _getdtablesize(_ctx: &EmEnv) -> i32 {
 }
 pub fn _gethostbyaddr(_ctx: &EmEnv, _addr: i32, _addrlen: i32, _atype: i32) -> i32 {
     debug!("emscripten::gethostbyaddr");
-    0
+    -1
 }
 pub fn _gethostbyname(_ctx: &EmEnv, _name: i32) -> i32 {
     debug!("emscripten::gethostbyname_r");
-    0
+    -1
 }
 pub fn _gethostbyname_r(
     _ctx: &EmEnv,
@@ -109,12 +107,12 @@ pub fn _gethostbyname_r(
     _err: i32,
 ) -> i32 {
     debug!("emscripten::gethostbyname_r");
-    0
+    -1
 }
 // NOTE: php.js has proper impl; libc has proper impl for linux
 pub fn _getloadavg(_ctx: &EmEnv, _loadavg: i32, _nelem: i32) -> i32 {
     debug!("emscripten::getloadavg");
-    0
+    -1
 }
 pub fn _getnameinfo(
     _ctx: &EmEnv,
@@ -130,7 +128,7 @@ pub fn _getnameinfo(
         "emscripten::_getnameinfo({}, {}, {}, {}, {}, {}, {})",
         _addr, _addrlen, _host, _hostlen, _serv, _servlen, _flags
     );
-    0
+    -1
 }
 
 // Invoke functions

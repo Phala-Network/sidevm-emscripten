@@ -27,6 +27,8 @@ use wasmer::{
 #[cfg(unix)]
 use ::libc::DIR as LibcDir;
 
+type Result<T, E = Exited> = std::result::Result<T, E>;
+
 // We use a placeholder for windows
 #[cfg(not(unix))]
 type LibcDir = u8;
@@ -67,6 +69,16 @@ pub use self::utils::{
     allocate_cstr_on_stack, allocate_on_stack, get_emscripten_memory_size, get_emscripten_metadata,
     get_emscripten_table_size, is_emscripten_module,
 };
+
+#[derive(Debug)]
+pub struct Exited(i32);
+
+impl std::fmt::Display for Exited {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "exited with code {}", self.0)
+    }
+}
+impl std::error::Error for Exited {}
 
 #[derive(Clone)]
 /// The environment provided to the Emscripten imports.
@@ -1037,7 +1049,7 @@ pub fn generate_emscripten_env(
     import_object
 }
 
-pub fn nullfunc(ctx: &EmEnv, _x: u32) {
+pub fn nullfunc(ctx: &EmEnv, _x: u32) -> Result<()> {
     use crate::process::abort_with_message;
     debug!("emscripten::nullfunc_i {}", _x);
     abort_with_message(
@@ -1046,7 +1058,7 @@ pub fn nullfunc(ctx: &EmEnv, _x: u32) {
     (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an \
     incorrect type, which will fail? (it is worth building your source files with -Werror (\
     warnings are errors), as warnings can indicate undefined behavior which can cause this)",
-    );
+    )
 }
 
 /// The current version of this crate

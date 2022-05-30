@@ -2,11 +2,9 @@ use super::env;
 use super::env::get_emscripten_data;
 use crate::storage::align_memory;
 use crate::EmEnv;
-use libc::stat;
 use std::ffi::CStr;
 use std::mem::size_of;
 use std::os::raw::c_char;
-use std::path::PathBuf;
 use std::slice;
 use wasmer::{GlobalInit, Memory, Module, Pages};
 
@@ -146,72 +144,6 @@ pub unsafe fn allocate_cstr_on_stack<'a>(ctx: &'a EmEnv, s: &str) -> (u32, &'a [
     (offset, slice)
 }
 
-#[cfg(not(target_os = "windows"))]
-pub unsafe fn copy_terminated_array_of_cstrs(_ctx: &EmEnv, cstrs: *mut *mut c_char) -> u32 {
-    let _total_num = {
-        let mut ptr = cstrs;
-        let mut counter = 0;
-        while !(*ptr).is_null() {
-            counter += 1;
-            ptr = ptr.add(1);
-        }
-        counter
-    };
-    debug!(
-        "emscripten::copy_terminated_array_of_cstrs::total_num: {}",
-        _total_num
-    );
-    0
-}
-
-#[repr(C)]
-pub struct GuestStat {
-    st_dev: u32,
-    __st_dev_padding: u32,
-    __st_ino_truncated: u32,
-    st_mode: u32,
-    st_nlink: u32,
-    st_uid: u32,
-    st_gid: u32,
-    st_rdev: u32,
-    __st_rdev_padding: u32,
-    st_size: u32,
-    st_blksize: u32,
-    st_blocks: u32,
-    st_atime: u64,
-    st_mtime: u64,
-    st_ctime: u64,
-    st_ino: u32,
-}
-
-#[allow(clippy::cast_ptr_alignment)]
-pub unsafe fn copy_stat_into_wasm(ctx: &EmEnv, buf: u32, stat: &stat) {
-    let stat_ptr = emscripten_memory_pointer!(ctx.memory(0), buf) as *mut GuestStat;
-    (*stat_ptr).st_dev = stat.st_dev as _;
-    (*stat_ptr).__st_dev_padding = 0;
-    (*stat_ptr).__st_ino_truncated = stat.st_ino as _;
-    (*stat_ptr).st_mode = stat.st_mode as _;
-    (*stat_ptr).st_nlink = stat.st_nlink as _;
-    (*stat_ptr).st_uid = stat.st_uid as _;
-    (*stat_ptr).st_gid = stat.st_gid as _;
-    (*stat_ptr).st_rdev = stat.st_rdev as _;
-    (*stat_ptr).__st_rdev_padding = 0;
-    (*stat_ptr).st_size = stat.st_size as _;
-    (*stat_ptr).st_blksize = 4096;
-    #[cfg(not(target_os = "windows"))]
-    {
-        (*stat_ptr).st_blocks = stat.st_blocks as _;
-    }
-    #[cfg(target_os = "windows")]
-    {
-        (*stat_ptr).st_blocks = 0;
-    }
-    (*stat_ptr).st_atime = stat.st_atime as _;
-    (*stat_ptr).st_mtime = stat.st_mtime as _;
-    (*stat_ptr).st_ctime = stat.st_ctime as _;
-    (*stat_ptr).st_ino = stat.st_ino as _;
-}
-
 #[allow(dead_code)] // it's used in `env/windows/mod.rs`.
 pub fn read_string_from_wasm(memory: &Memory, offset: u32) -> String {
     let v: Vec<u8> = memory.view()[(offset as usize)..]
@@ -220,60 +152,4 @@ pub fn read_string_from_wasm(memory: &Memory, offset: u32) -> String {
         .take_while(|&byte| byte != 0)
         .collect();
     String::from_utf8_lossy(&v).to_owned().to_string()
-}
-
-/// This function trys to find an entry in mapdir
-/// translating paths into their correct value
-pub fn get_cstr_path(ctx: &EmEnv, path: *const i8) -> Option<std::ffi::CString> {
-    use std::collections::VecDeque;
-
-    let path_str =
-        unsafe { std::ffi::CStr::from_ptr(path as *const _).to_str().unwrap() }.to_string();
-    let data = get_emscripten_data(ctx);
-    let path = PathBuf::from(path_str);
-    let mut prefix_added = false;
-    let mut components = path.components().collect::<VecDeque<_>>();
-    // TODO(mark): handle absolute/non-canonical/non-relative paths too (this
-    // functionality should be shared among the abis)
-    if components.len() == 1 {
-        components.push_front(std::path::Component::CurDir);
-        prefix_added = true;
-    }
-    let mut cumulative_path = PathBuf::new();
-    for c in components.into_iter() {
-        cumulative_path.push(c);
-        if let Some(val) = data
-            .mapped_dirs
-            .get(&cumulative_path.to_string_lossy().to_string())
-        {
-            let rest_of_path = if !prefix_added {
-                path.strip_prefix(cumulative_path).ok()?
-            } else {
-                &path
-            };
-            let rebased_path = val.join(rest_of_path);
-            return std::ffi::CString::new(rebased_path.to_string_lossy().as_bytes()).ok();
-        }
-    }
-    None
-}
-
-/// gets the current directory
-/// handles mapdir logic
-pub fn get_current_directory(ctx: &EmEnv) -> Option<PathBuf> {
-    if let Some(val) = get_emscripten_data(ctx).mapped_dirs.get(".") {
-        return Some(val.clone());
-    }
-    std::env::current_dir()
-        .map(|cwd| {
-            if let Some(val) = get_emscripten_data(ctx)
-                .mapped_dirs
-                .get(&cwd.to_string_lossy().to_string())
-            {
-                val.clone()
-            } else {
-                cwd
-            }
-        })
-        .ok()
 }
