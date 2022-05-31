@@ -19,10 +19,12 @@ use std::f64;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use wasmer::{
-    imports, namespace, Exports, Function, FunctionType, Global, ImportObject, Instance, LazyInit,
-    Memory, MemoryType, Module, NativeFunc, Pages, RuntimeError, Store, Table, TableType, Val,
-    ValType, WasmerEnv,
+    Extern, Function, FunctionType, Global, Instance, LazyInit, Memory, MemoryType, Module,
+    NativeFunc, Pages, RuntimeError, Store, Table, TableType, Val, ValType, WasmerEnv,
 };
+
+type Exports = HashMap<String, Extern>;
+type ImportObject = HashMap<String, Exports>;
 
 #[cfg(unix)]
 use ::libc::DIR as LibcDir;
@@ -548,6 +550,45 @@ impl EmscriptenGlobals {
     }
 }
 
+#[macro_export]
+macro_rules! imports {
+    ( $( $ns_name:expr => $ns:tt ),* $(,)? ) => {
+        {
+            let mut import_object = ImportObject::default();
+
+            $({
+                let namespace = crate::import_namespace!($ns);
+
+                import_object.insert($ns_name.into(), namespace);
+            })*
+
+            import_object
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! namespace {
+    ($( $import_name:expr => $import_item:expr ),* $(,)? ) => {
+        crate::import_namespace!( { $( $import_name => $import_item, )* } )
+    };
+}
+
+#[macro_export]
+macro_rules! import_namespace {
+    ( { $( $import_name:expr => $import_item:expr ),* $(,)? } ) => {{
+        let mut namespace = Exports::default();
+        $(
+            namespace.insert($import_name.into(), $import_item.into());
+        )*
+        namespace
+    }};
+
+    ( $namespace:ident ) => {
+        $namespace
+    };
+}
+
 pub fn generate_emscripten_env(
     store: &Store,
     globals: &mut EmscriptenGlobals,
@@ -1012,7 +1053,7 @@ pub fn generate_emscripten_env(
     let mut to_insert: Vec<(String, _)> = vec![];
     for (k, v) in env_ns.iter() {
         if let Some(k) = k.strip_prefix('_') {
-            if !env_ns.contains(k) {
+            if !env_ns.contains_key(k) {
                 to_insert.push((k.to_string(), v.clone()));
             }
         }
@@ -1024,8 +1065,8 @@ pub fn generate_emscripten_env(
 
     for null_function_name in globals.null_function_names.iter() {
         env_ns.insert(
-            null_function_name.as_str(),
-            Function::new_native_with_env(store, env.clone(), nullfunc),
+            null_function_name.clone(),
+            Function::new_native_with_env(store, env.clone(), nullfunc).into(),
         );
     }
 
