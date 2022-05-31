@@ -1,7 +1,7 @@
 use super::env;
 use super::env::get_emscripten_data;
 use crate::storage::align_memory;
-use crate::EmEnv;
+use crate::{EmEnv, Result, OptionExt, aborted};
 use std::ffi::CStr;
 use std::mem::size_of;
 use std::os::raw::c_char;
@@ -102,10 +102,10 @@ pub unsafe fn write_to_buf(ctx: &EmEnv, string: *const c_char, buf: u32, max: u3
 }
 
 /// This function expects nullbyte to be appended.
-pub unsafe fn copy_cstr_into_wasm(ctx: &EmEnv, cstr: *const c_char) -> u32 {
-    let s = CStr::from_ptr(cstr).to_str().unwrap();
+pub unsafe fn copy_cstr_into_wasm(ctx: &EmEnv, cstr: *const c_char) -> Result<u32> {
+    let s = CStr::from_ptr(cstr).to_str().or(Err(aborted()))?;
     let cstr_len = s.len();
-    let space_offset = env::call_malloc(ctx, (cstr_len as u32) + 1);
+    let space_offset = env::call_malloc(ctx, (cstr_len as u32) + 1)?;
     let raw_memory = emscripten_memory_pointer!(ctx.memory(0), space_offset) as *mut c_char;
     let slice = slice::from_raw_parts_mut(raw_memory, cstr_len);
 
@@ -117,31 +117,33 @@ pub unsafe fn copy_cstr_into_wasm(ctx: &EmEnv, cstr: *const c_char) -> u32 {
     //      at the top that crashes when there is no null byte
     *raw_memory.add(cstr_len) = 0;
 
-    space_offset
+    Ok(space_offset)
 }
 
-pub unsafe fn allocate_on_stack<'a, T: Copy>(ctx: &'a EmEnv, count: u32) -> (u32, &'a mut [T]) {
+pub unsafe fn allocate_on_stack<'a, T: Copy>(
+    ctx: &'a EmEnv,
+    count: u32,
+) -> Result<(u32, &'a mut [T])> {
     let offset = get_emscripten_data(ctx)
         .stack_alloc_ref()
-        .unwrap()
-        .call(count * (size_of::<T>() as u32))
-        .unwrap();
+        .ok()?
+        .call(count * (size_of::<T>() as u32))?;
 
     let addr = emscripten_memory_pointer!(ctx.memory(0), offset) as *mut T;
     let slice = slice::from_raw_parts_mut(addr, count as usize);
 
-    (offset, slice)
+    Ok((offset, slice))
 }
 
-pub unsafe fn allocate_cstr_on_stack<'a>(ctx: &'a EmEnv, s: &str) -> (u32, &'a [u8]) {
-    let (offset, slice) = allocate_on_stack(ctx, (s.len() + 1) as u32);
+pub unsafe fn allocate_cstr_on_stack<'a>(ctx: &'a EmEnv, s: &str) -> Result<(u32, &'a [u8])> {
+    let (offset, slice) = allocate_on_stack(ctx, (s.len() + 1) as u32)?;
 
     use std::iter;
     for (byte, loc) in s.bytes().chain(iter::once(0)).zip(slice.iter_mut()) {
         *loc = byte;
     }
 
-    (offset, slice)
+    Ok((offset, slice))
 }
 
 #[allow(dead_code)] // it's used in `env/windows/mod.rs`.

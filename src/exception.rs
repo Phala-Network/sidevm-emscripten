@@ -4,7 +4,7 @@ use crate::process::abort_with_message;
 use crate::{EmEnv, Result};
 
 /// emscripten: ___cxa_allocate_exception
-pub fn ___cxa_allocate_exception(ctx: &EmEnv, size: u32) -> u32 {
+pub fn ___cxa_allocate_exception(ctx: &EmEnv, size: u32) -> Result<u32> {
     debug!("emscripten::___cxa_allocate_exception");
     env::call_malloc(ctx, size as _)
 }

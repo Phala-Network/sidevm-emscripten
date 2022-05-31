@@ -31,6 +31,38 @@ use ::libc::DIR as LibcDir;
 
 type Result<T, E = Exited> = std::result::Result<T, E>;
 
+trait OptionExt {
+    type Inner;
+
+    fn ok(self) -> Result<Self::Inner>;
+}
+
+fn aborted() -> Exited {
+    Exited(-6)
+}
+
+impl<T> OptionExt for Option<T> {
+    type Inner = T;
+
+    fn ok(self) -> Result<Self::Inner> {
+        self.ok_or(aborted())
+    }
+}
+
+macro_rules! impl_from_for_exited {
+    ($($from:ty),*) => {
+        $(
+            impl From<$from> for Exited {
+                fn from(_: $from) -> Exited {
+                    aborted()
+                }
+            }
+        )*
+    };
+}
+
+impl_from_for_exited!(i32, u32, RuntimeError);
+
 // We use a placeholder for windows
 #[cfg(not(unix))]
 type LibcDir = u8;
@@ -324,105 +356,6 @@ pub fn set_up_emscripten(instance: &mut Instance) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// Call the main function in emscripten, assumes that the emscripten state is
-/// set up.
-///
-/// If you don't want to set it up yourself, consider using [`run_emscripten_instance`].
-pub fn emscripten_call_main(
-    instance: &mut Instance,
-    env: &EmEnv,
-    path: &str,
-    args: &[&str],
-) -> Result<(), RuntimeError> {
-    let (function_name, main_func) = match instance.exports.get::<Function>("_main") {
-        Ok(func) => Ok(("_main", func)),
-        Err(_e) => instance
-            .exports
-            .get::<Function>("main")
-            .map(|func| ("main", func)),
-    }
-    .map_err(|e| RuntimeError::new(e.to_string()))?;
-    let num_params = main_func.ty().params().len();
-    let _result = match num_params {
-        2 => {
-            let mut new_args = vec![path];
-            new_args.extend(args);
-            let (argc, argv) = store_module_arguments(env, new_args);
-            let func: &Function = instance
-                .exports
-                .get(function_name)
-                .map_err(|e| RuntimeError::new(e.to_string()))?;
-            func.call(&[Val::I32(argc as i32), Val::I32(argv as i32)])?;
-        }
-        0 => {
-            let func: &Function = instance
-                .exports
-                .get(function_name)
-                .map_err(|e| RuntimeError::new(e.to_string()))?;
-            func.call(&[])?;
-        }
-        _ => {
-            todo!("Update error type to be able to express this");
-            /*return Err(RuntimeError:: CallError::Resolve(ResolveError::ExportWrongType {
-                name: "main".to_string(),
-            }))*/
-        }
-    };
-
-    Ok(())
-}
-
-/// Top level function to execute emscripten
-pub fn run_emscripten_instance(
-    instance: &mut Instance,
-    env: &mut EmEnv,
-    globals: &mut EmscriptenGlobals,
-    path: &str,
-    args: Vec<&str>,
-    entrypoint: Option<String>,
-) -> Result<(), RuntimeError> {
-    env.set_memory(globals.memory.clone());
-    set_up_emscripten(instance)?;
-
-    // println!("running emscripten instance");
-
-    if let Some(ep) = entrypoint {
-        debug!("Running entry point: {}", &ep);
-        let arg = unsafe { allocate_cstr_on_stack(env, args[0]).0 };
-        //let (argc, argv) = store_module_arguments(instance.context_mut(), args);
-        let func: &Function = instance
-            .exports
-            .get(&ep)
-            .map_err(|e| RuntimeError::new(e.to_string()))?;
-        func.call(&[Val::I32(arg as i32)])?;
-    } else {
-        emscripten_call_main(instance, env, path, &args)?;
-    }
-
-    // TODO atexit for emscripten
-    // println!("{:?}", data);
-    Ok(())
-}
-
-fn store_module_arguments(ctx: &EmEnv, args: Vec<&str>) -> (u32, u32) {
-    let argc = args.len() + 1;
-
-    let mut args_slice = vec![0; argc];
-    for (slot, arg) in args_slice[0..argc].iter_mut().zip(args.iter()) {
-        *slot = unsafe { allocate_cstr_on_stack(ctx, &arg).0 };
-    }
-
-    let (argv_offset, argv_slice): (_, &mut [u32]) =
-        unsafe { allocate_on_stack(ctx, ((argc) * 4) as u32) };
-    assert!(!argv_slice.is_empty());
-    for (slot, arg) in argv_slice[0..argc].iter_mut().zip(args_slice.iter()) {
-        *slot = *arg
-    }
-    argv_slice[argc] = 0;
-
-    (argc as u32 - 1, argv_offset)
-}
-
 pub fn emscripten_set_up_memory(
     memory: &Memory,
     globals: &EmscriptenGlobalsData,
@@ -482,14 +415,16 @@ impl EmscriptenGlobals {
 
         // Memory initialization
         let memory_type = MemoryType::new(memory_min, memory_max, shared);
-        let memory = Memory::new(store, memory_type).unwrap();
+        let memory =
+            Memory::new(store, memory_type).or(Err("memory creation failed".to_owned()))?;
 
         let table_type = TableType {
             ty: ValType::FuncRef,
             minimum: table_min,
             maximum: table_max,
         };
-        let table = Table::new(store, table_type, Val::FuncRef(None)).unwrap();
+        let table = Table::new(store, table_type, Val::FuncRef(None))
+            .or(Err("memory creation failed".to_owned()))?;
 
         let data = {
             let static_bump = STATIC_BUMP;

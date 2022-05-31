@@ -5,24 +5,24 @@ type PidT = libc::pid_t;
 #[cfg(target_os = "windows")]
 type PidT = c_int;
 
-use crate::{EmEnv, Exited, Result};
+use crate::{EmEnv, Exited, Result, aborted};
 
 pub fn abort_with_message<T>(_ctx: &EmEnv, message: &str) -> Result<T> {
     debug!("emscripten::abort_with_message");
     println!("{}", message);
-    Err(Exited(1))
+    Err(aborted())
 }
 
 /// The name of this call is `abort` but we want to avoid conflicts with libc::abort
-pub fn em_abort(ctx: &EmEnv, arg: u32) -> Result<()> {
+pub fn em_abort(_ctx: &EmEnv, arg: u32) -> Result<()> {
     debug!("emscripten::abort");
     eprintln!("Program aborted with value {}", arg);
-    _abort(ctx)
+    Err(aborted())
 }
 
 pub fn _abort(_ctx: &EmEnv) -> Result<()> {
     debug!("emscripten::_abort");
-    Err(Exited(1))
+    Err(aborted())
 }
 
 pub fn _prctl(ctx: &EmEnv, _a: i32, _b: i32) -> Result<i32> {

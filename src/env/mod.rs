@@ -9,29 +9,24 @@ use libc::c_char;
 use crate::{
     allocate_on_stack,
     ptr::{Array, WasmPtr},
-    EmscriptenData, Exited,
+    EmscriptenData, Exited, OptionExt,
 };
 
 use std::os::raw::c_int;
 use std::sync::MutexGuard;
 
-use crate::EmEnv;
+use crate::{EmEnv, Result};
 use wasmer::ValueType;
 
-pub fn call_malloc(ctx: &EmEnv, size: u32) -> u32 {
-    get_emscripten_data(ctx)
-        .malloc_ref()
-        .unwrap()
-        .call(size)
-        .unwrap()
+pub fn call_malloc(ctx: &EmEnv, size: u32) -> Result<u32> {
+    Ok(get_emscripten_data(ctx).malloc_ref().ok()?.call(size)?)
 }
 
-pub fn call_memset(ctx: &EmEnv, pointer: u32, value: u32, size: u32) -> u32 {
-    get_emscripten_data(ctx)
+pub fn call_memset(ctx: &EmEnv, pointer: u32, value: u32, size: u32) -> Result<u32> {
+    Ok(get_emscripten_data(ctx)
         .memset_ref()
-        .unwrap()
-        .call(pointer, value, size)
-        .unwrap()
+        .ok()?
+        .call(pointer, value, size)?)
 }
 
 pub(crate) fn get_emscripten_data(ctx: &EmEnv) -> MutexGuard<EmscriptenData> {
@@ -43,24 +38,24 @@ pub fn _getpagesize(_ctx: &EmEnv) -> u32 {
     16384
 }
 
-pub fn _times(ctx: &EmEnv, buffer: u32) -> u32 {
+pub fn _times(ctx: &EmEnv, buffer: u32) -> Result<u32> {
     if buffer != 0 {
-        call_memset(ctx, buffer, 0, 16);
+        call_memset(ctx, buffer, 0, 16)?;
     }
-    0
+    Ok(0)
 }
 
 #[allow(clippy::cast_ptr_alignment)]
-pub fn ___build_environment(ctx: &EmEnv, environ: c_int) {
+pub fn ___build_environment(ctx: &EmEnv, environ: c_int) -> Result<()> {
     debug!("emscripten::___build_environment {}", environ);
     const MAX_ENV_VALUES: u32 = 64;
     const TOTAL_ENV_SIZE: u32 = 1024;
     let environment = emscripten_memory_pointer!(ctx.memory(0), environ) as *mut c_int;
     let (mut pool_offset, env_ptr, mut pool_ptr) = unsafe {
         let (pool_offset, _pool_slice): (u32, &mut [u8]) =
-            allocate_on_stack(ctx, TOTAL_ENV_SIZE as u32);
+            allocate_on_stack(ctx, TOTAL_ENV_SIZE as u32)?;
         let (env_offset, _env_slice): (u32, &mut [u8]) =
-            allocate_on_stack(ctx, (MAX_ENV_VALUES * 4) as u32);
+            allocate_on_stack(ctx, (MAX_ENV_VALUES * 4) as u32)?;
         let env_ptr = emscripten_memory_pointer!(ctx.memory(0), env_offset) as *mut c_int;
         let pool_ptr = emscripten_memory_pointer!(ctx.memory(0), pool_offset) as *mut u8;
         *env_ptr = pool_offset as i32;
@@ -101,6 +96,7 @@ pub fn ___build_environment(ctx: &EmEnv, environ: c_int) {
         }
         *env_ptr.add(strings.len() * 4) = 0;
     }
+    Ok(())
 }
 
 pub fn ___assert_fail(

@@ -1,5 +1,5 @@
 use super::utils::{copy_cstr_into_wasm, write_to_buf};
-use crate::{allocate_on_stack, lazy_static, EmEnv};
+use crate::{aborted, allocate_on_stack, lazy_static, EmEnv, Result};
 use libc::{c_char, c_int};
 // use libc::{c_char, c_int, clock_getres, clock_settime};
 use std::mem;
@@ -64,7 +64,10 @@ pub fn _gettimeofday(ctx: &EmEnv, tp: c_int, tz: c_int) -> c_int {
     );
     unsafe {
         let now = SystemTime::now();
-        let since_epoch = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let since_epoch = match now.duration_since(SystemTime::UNIX_EPOCH) {
+            Ok(since) => since,
+            Err(_) => return -1,
+        };
         let timeval_struct_ptr = emscripten_memory_pointer!(ctx.memory(0), tp) as *mut GuestTimeVal;
 
         (*timeval_struct_ptr).tv_sec = since_epoch.as_secs() as _;
@@ -199,7 +202,7 @@ unsafe fn fmt_time(ctx: &EmEnv, time: u32) -> *const c_char {
 }
 
 /// emscripten: _asctime
-pub fn _asctime(ctx: &EmEnv, time: u32) -> u32 {
+pub fn _asctime(ctx: &EmEnv, time: u32) -> Result<u32> {
     debug!("emscripten::_asctime {}", time);
 
     unsafe {
@@ -232,7 +235,7 @@ pub fn _asctime_r(ctx: &EmEnv, time: u32, buf: u32) -> u32 {
 
 /// emscripten: _localtime
 #[allow(clippy::cast_ptr_alignment)]
-pub fn _localtime(ctx: &EmEnv, time_p: u32) -> c_int {
+pub fn _localtime(ctx: &EmEnv, time_p: u32) -> Result<c_int> {
     debug!("emscripten::_localtime {}", time_p);
     // NOTE: emscripten seems to want tzset() called in this function
     //      https://stackoverflow.com/questions/19170721/real-time-awareness-of-timezone-change-in-localtime-vs-localtime-r
@@ -244,7 +247,7 @@ pub fn _localtime(ctx: &EmEnv, time_p: u32) -> c_int {
     };
 
     unsafe {
-        let tm_struct_offset = env::call_malloc(ctx, mem::size_of::<guest_tm>() as _);
+        let tm_struct_offset = env::call_malloc(ctx, mem::size_of::<guest_tm>() as _)?;
         let tm_struct_ptr =
             emscripten_memory_pointer!(ctx.memory(0), tm_struct_offset) as *mut guest_tm;
         // debug!(
@@ -264,7 +267,7 @@ pub fn _localtime(ctx: &EmEnv, time_p: u32) -> c_int {
         (*tm_struct_ptr).tm_gmtoff = 0;
         (*tm_struct_ptr).tm_zone = 0;
 
-        tm_struct_offset as _
+        Ok(tm_struct_offset as _)
     }
 }
 /// emscripten: _localtime_r
@@ -314,18 +317,18 @@ pub fn _time(ctx: &EmEnv, time_p: u32) -> i32 {
     }
 }
 
-pub fn _ctime_r(ctx: &EmEnv, time_p: u32, buf: u32) -> u32 {
+pub fn _ctime_r(ctx: &EmEnv, time_p: u32, buf: u32) -> Result<u32> {
     debug!("emscripten::_ctime_r {} {}", time_p, buf);
 
     // var stack = stackSave();
-    let (result_offset, _result_slice): (u32, &mut [u8]) = unsafe { allocate_on_stack(ctx, 44) };
+    let (result_offset, _result_slice): (u32, &mut [u8]) = unsafe { allocate_on_stack(ctx, 44)? };
     let time = _localtime_r(ctx, time_p, result_offset) as u32;
     let rv = _asctime_r(ctx, time, buf);
     // stackRestore(stack);
-    rv
+    Ok(rv)
 }
 
-pub fn _ctime(ctx: &EmEnv, time_p: u32) -> u32 {
+pub fn _ctime(ctx: &EmEnv, time_p: u32) -> Result<u32> {
     debug!("emscripten::_ctime {}", time_p);
     let tm_current = 2414544;
     _ctime_r(ctx, time_p, tm_current)
@@ -383,7 +386,13 @@ pub fn _timegm(_ctx: &EmEnv, _time_ptr: c_int) -> i32 {
 }
 
 /// emscripten: _strftime
-pub fn _strftime(ctx: &EmEnv, s_ptr: c_int, maxsize: u32, format_ptr: c_int, tm_ptr: c_int) -> i32 {
+pub fn _strftime(
+    ctx: &EmEnv,
+    s_ptr: c_int,
+    maxsize: u32,
+    format_ptr: c_int,
+    tm_ptr: c_int,
+) -> Result<i32> {
     debug!(
         "emscripten::_strftime {} {} {} {}",
         s_ptr, maxsize, format_ptr, tm_ptr
@@ -396,7 +405,11 @@ pub fn _strftime(ctx: &EmEnv, s_ptr: c_int, maxsize: u32, format_ptr: c_int, tm_
     #[allow(clippy::cast_ptr_alignment)]
     let tm = emscripten_memory_pointer!(ctx.memory(0), tm_ptr) as *const guest_tm;
 
-    let format_string = unsafe { std::ffi::CStr::from_ptr(format).to_str().unwrap() };
+    let format_string = unsafe {
+        std::ffi::CStr::from_ptr(format)
+            .to_str()
+            .or(Err(crate::aborted()))?
+    };
 
     debug!("=> format_string: {:?}", format_string);
 
@@ -404,13 +417,14 @@ pub fn _strftime(ctx: &EmEnv, s_ptr: c_int, maxsize: u32, format_ptr: c_int, tm_
 
     let rust_date = time::Date::try_from_ymd(tm.tm_year, tm.tm_mon as u8, tm.tm_mday as u8);
     if !rust_date.is_ok() {
-        return 0;
+        return Ok(0);
     }
     let rust_time = time::Time::try_from_hms(tm.tm_hour as u8, tm.tm_min as u8, tm.tm_sec as u8);
     if !rust_time.is_ok() {
-        return 0;
+        return Ok(0);
     }
-    let rust_datetime = time::PrimitiveDateTime::new(rust_date.unwrap(), rust_time.unwrap());
+    let rust_datetime =
+        time::PrimitiveDateTime::new(rust_date.or(Err(aborted()))?, rust_time.or(Err(aborted()))?);
     let rust_odt = rust_datetime.assume_offset(time::UtcOffset::seconds(tm.tm_gmtoff));
 
     let result_str = rust_odt.format(format_string);
@@ -418,14 +432,14 @@ pub fn _strftime(ctx: &EmEnv, s_ptr: c_int, maxsize: u32, format_ptr: c_int, tm_
     // pad for null?
     let bytes = result_str.chars().count();
     if bytes as u32 > maxsize {
-        0
+        Ok(0)
     } else {
         // write output string
         for (i, c) in result_str.chars().enumerate() {
             unsafe { *s.add(i) = c as c_char };
         }
         // null terminate?
-        bytes as i32
+        Ok(bytes as i32)
     }
 }
 
@@ -437,7 +451,7 @@ pub fn _strftime_l(
     format_ptr: c_int,
     tm_ptr: c_int,
     _last: c_int,
-) -> i32 {
+) -> Result<i32> {
     debug!(
         "emscripten::_strftime_l {} {} {} {}",
         s_ptr, maxsize, format_ptr, tm_ptr

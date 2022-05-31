@@ -6,7 +6,7 @@ pub use self::unix::*;
 
 use crate::{
     ptr::{Array, WasmPtr},
-    EmEnv, Exited, Result,
+    EmEnv, Exited, Result, OptionExt,
 };
 
 use super::varargs::VarArgs;
@@ -273,7 +273,7 @@ pub fn ___syscall183(ctx: &EmEnv, _which: c_int, mut varargs: VarArgs) -> Result
         return Ok(0);
     }
 
-    let buf_writer = buf_offset.deref(&memory, 0, len as u32).ok_or(Exited(-1))?;
+    let buf_writer = buf_offset.deref(&memory, 0, len as u32).ok()?;
 
     for (i, byte) in path_string.bytes().enumerate() {
         buf_writer[i].set(byte as _);
