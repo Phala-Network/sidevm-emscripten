@@ -23,8 +23,8 @@ use wasmer::{
     NativeFunc, Pages, RuntimeError, Store, Table, TableType, Val, ValType, WasmerEnv,
 };
 
-type Exports = HashMap<String, Extern>;
-type ImportObject = HashMap<String, Exports>;
+pub type Exports = HashMap<String, Extern>;
+pub type ImportObject = HashMap<String, Exports>;
 
 #[cfg(unix)]
 use ::libc::DIR as LibcDir;
@@ -38,7 +38,7 @@ trait OptionExt {
 }
 
 fn aborted() -> Exited {
-    Exited(-6)
+    Exited(6)
 }
 
 impl<T> OptionExt for Option<T> {
@@ -105,7 +105,7 @@ pub use self::utils::{
 };
 
 #[derive(Debug)]
-pub struct Exited(i32);
+pub struct Exited(pub i32);
 
 impl std::fmt::Display for Exited {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -489,10 +489,10 @@ impl EmscriptenGlobals {
 macro_rules! imports {
     ( $( $ns_name:expr => $ns:tt ),* $(,)? ) => {
         {
-            let mut import_object = ImportObject::default();
+            let mut import_object = $crate::ImportObject::default();
 
             $({
-                let namespace = crate::import_namespace!($ns);
+                let namespace = $crate::import_namespace!($ns);
 
                 import_object.insert($ns_name.into(), namespace);
             })*
@@ -505,14 +505,14 @@ macro_rules! imports {
 #[macro_export]
 macro_rules! namespace {
     ($( $import_name:expr => $import_item:expr ),* $(,)? ) => {
-        crate::import_namespace!( { $( $import_name => $import_item, )* } )
+        $crate::import_namespace!( { $( $import_name => $import_item, )* } )
     };
 }
 
 #[macro_export]
 macro_rules! import_namespace {
     ( { $( $import_name:expr => $import_item:expr ),* $(,)? } ) => {{
-        let mut namespace = Exports::default();
+        let mut namespace = $crate::Exports::default();
         $(
             namespace.insert($import_name.into(), $import_item.into());
         )*
