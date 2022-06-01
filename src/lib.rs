@@ -19,13 +19,49 @@ use std::f64;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use wasmer::{
-    imports, namespace, Exports, Function, FunctionType, Global, ImportObject, Instance, LazyInit,
-    Memory, MemoryType, Module, NativeFunc, Pages, RuntimeError, Store, Table, TableType, Val,
-    ValType, WasmerEnv,
+    Extern, Function, FunctionType, Global, Instance, LazyInit, Memory, MemoryType, Module,
+    NativeFunc, Pages, RuntimeError, Store, Table, TableType, Val, ValType, WasmerEnv,
 };
+
+pub type Exports = HashMap<String, Extern>;
+pub type ImportObject = HashMap<String, Exports>;
 
 #[cfg(unix)]
 use ::libc::DIR as LibcDir;
+
+type Result<T, E = Exited> = std::result::Result<T, E>;
+
+trait OptionExt {
+    type Inner;
+
+    fn ok(self) -> Result<Self::Inner>;
+}
+
+fn aborted() -> Exited {
+    Exited(6)
+}
+
+impl<T> OptionExt for Option<T> {
+    type Inner = T;
+
+    fn ok(self) -> Result<Self::Inner> {
+        self.ok_or(aborted())
+    }
+}
+
+macro_rules! impl_from_for_exited {
+    ($($from:ty),*) => {
+        $(
+            impl From<$from> for Exited {
+                fn from(_: $from) -> Exited {
+                    aborted()
+                }
+            }
+        )*
+    };
+}
+
+impl_from_for_exited!(i32, u32, RuntimeError);
 
 // We use a placeholder for windows
 #[cfg(not(unix))]
@@ -67,6 +103,16 @@ pub use self::utils::{
     allocate_cstr_on_stack, allocate_on_stack, get_emscripten_memory_size, get_emscripten_metadata,
     get_emscripten_table_size, is_emscripten_module,
 };
+
+#[derive(Debug)]
+pub struct Exited(pub i32);
+
+impl std::fmt::Display for Exited {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "exited with code {}", self.0)
+    }
+}
+impl std::error::Error for Exited {}
 
 #[derive(Clone)]
 /// The environment provided to the Emscripten imports.
@@ -310,105 +356,6 @@ pub fn set_up_emscripten(instance: &mut Instance) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-/// Call the main function in emscripten, assumes that the emscripten state is
-/// set up.
-///
-/// If you don't want to set it up yourself, consider using [`run_emscripten_instance`].
-pub fn emscripten_call_main(
-    instance: &mut Instance,
-    env: &EmEnv,
-    path: &str,
-    args: &[&str],
-) -> Result<(), RuntimeError> {
-    let (function_name, main_func) = match instance.exports.get::<Function>("_main") {
-        Ok(func) => Ok(("_main", func)),
-        Err(_e) => instance
-            .exports
-            .get::<Function>("main")
-            .map(|func| ("main", func)),
-    }
-    .map_err(|e| RuntimeError::new(e.to_string()))?;
-    let num_params = main_func.ty().params().len();
-    let _result = match num_params {
-        2 => {
-            let mut new_args = vec![path];
-            new_args.extend(args);
-            let (argc, argv) = store_module_arguments(env, new_args);
-            let func: &Function = instance
-                .exports
-                .get(function_name)
-                .map_err(|e| RuntimeError::new(e.to_string()))?;
-            func.call(&[Val::I32(argc as i32), Val::I32(argv as i32)])?;
-        }
-        0 => {
-            let func: &Function = instance
-                .exports
-                .get(function_name)
-                .map_err(|e| RuntimeError::new(e.to_string()))?;
-            func.call(&[])?;
-        }
-        _ => {
-            todo!("Update error type to be able to express this");
-            /*return Err(RuntimeError:: CallError::Resolve(ResolveError::ExportWrongType {
-                name: "main".to_string(),
-            }))*/
-        }
-    };
-
-    Ok(())
-}
-
-/// Top level function to execute emscripten
-pub fn run_emscripten_instance(
-    instance: &mut Instance,
-    env: &mut EmEnv,
-    globals: &mut EmscriptenGlobals,
-    path: &str,
-    args: Vec<&str>,
-    entrypoint: Option<String>,
-) -> Result<(), RuntimeError> {
-    env.set_memory(globals.memory.clone());
-    set_up_emscripten(instance)?;
-
-    // println!("running emscripten instance");
-
-    if let Some(ep) = entrypoint {
-        debug!("Running entry point: {}", &ep);
-        let arg = unsafe { allocate_cstr_on_stack(env, args[0]).0 };
-        //let (argc, argv) = store_module_arguments(instance.context_mut(), args);
-        let func: &Function = instance
-            .exports
-            .get(&ep)
-            .map_err(|e| RuntimeError::new(e.to_string()))?;
-        func.call(&[Val::I32(arg as i32)])?;
-    } else {
-        emscripten_call_main(instance, env, path, &args)?;
-    }
-
-    // TODO atexit for emscripten
-    // println!("{:?}", data);
-    Ok(())
-}
-
-fn store_module_arguments(ctx: &EmEnv, args: Vec<&str>) -> (u32, u32) {
-    let argc = args.len() + 1;
-
-    let mut args_slice = vec![0; argc];
-    for (slot, arg) in args_slice[0..argc].iter_mut().zip(args.iter()) {
-        *slot = unsafe { allocate_cstr_on_stack(ctx, &arg).0 };
-    }
-
-    let (argv_offset, argv_slice): (_, &mut [u32]) =
-        unsafe { allocate_on_stack(ctx, ((argc) * 4) as u32) };
-    assert!(!argv_slice.is_empty());
-    for (slot, arg) in argv_slice[0..argc].iter_mut().zip(args_slice.iter()) {
-        *slot = *arg
-    }
-    argv_slice[argc] = 0;
-
-    (argc as u32 - 1, argv_offset)
-}
-
 pub fn emscripten_set_up_memory(
     memory: &Memory,
     globals: &EmscriptenGlobalsData,
@@ -468,14 +415,16 @@ impl EmscriptenGlobals {
 
         // Memory initialization
         let memory_type = MemoryType::new(memory_min, memory_max, shared);
-        let memory = Memory::new(store, memory_type).unwrap();
+        let memory =
+            Memory::new(store, memory_type).or(Err("memory creation failed".to_owned()))?;
 
         let table_type = TableType {
             ty: ValType::FuncRef,
             minimum: table_min,
             maximum: table_max,
         };
-        let table = Table::new(store, table_type, Val::FuncRef(None)).unwrap();
+        let table = Table::new(store, table_type, Val::FuncRef(None))
+            .or(Err("memory creation failed".to_owned()))?;
 
         let data = {
             let static_bump = STATIC_BUMP;
@@ -534,6 +483,45 @@ impl EmscriptenGlobals {
             null_function_names,
         })
     }
+}
+
+#[macro_export]
+macro_rules! imports {
+    ( $( $ns_name:expr => $ns:tt ),* $(,)? ) => {
+        {
+            let mut import_object = $crate::ImportObject::default();
+
+            $({
+                let namespace = $crate::import_namespace!($ns);
+
+                import_object.insert($ns_name.into(), namespace);
+            })*
+
+            import_object
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! namespace {
+    ($( $import_name:expr => $import_item:expr ),* $(,)? ) => {
+        $crate::import_namespace!( { $( $import_name => $import_item, )* } )
+    };
+}
+
+#[macro_export]
+macro_rules! import_namespace {
+    ( { $( $import_name:expr => $import_item:expr ),* $(,)? } ) => {{
+        let mut namespace = $crate::Exports::default();
+        $(
+            namespace.insert($import_name.into(), $import_item.into());
+        )*
+        namespace
+    }};
+
+    ( $namespace:ident ) => {
+        $namespace
+    };
 }
 
 pub fn generate_emscripten_env(
@@ -1000,7 +988,7 @@ pub fn generate_emscripten_env(
     let mut to_insert: Vec<(String, _)> = vec![];
     for (k, v) in env_ns.iter() {
         if let Some(k) = k.strip_prefix('_') {
-            if !env_ns.contains(k) {
+            if !env_ns.contains_key(k) {
                 to_insert.push((k.to_string(), v.clone()));
             }
         }
@@ -1012,8 +1000,8 @@ pub fn generate_emscripten_env(
 
     for null_function_name in globals.null_function_names.iter() {
         env_ns.insert(
-            null_function_name.as_str(),
-            Function::new_native_with_env(store, env.clone(), nullfunc),
+            null_function_name.clone(),
+            Function::new_native_with_env(store, env.clone(), nullfunc).into(),
         );
     }
 
@@ -1037,7 +1025,7 @@ pub fn generate_emscripten_env(
     import_object
 }
 
-pub fn nullfunc(ctx: &EmEnv, _x: u32) {
+pub fn nullfunc(ctx: &EmEnv, _x: u32) -> Result<()> {
     use crate::process::abort_with_message;
     debug!("emscripten::nullfunc_i {}", _x);
     abort_with_message(
@@ -1046,7 +1034,7 @@ pub fn nullfunc(ctx: &EmEnv, _x: u32) {
     (e.g. caused by calling a virtual method on a NULL pointer)? Or calling a function with an \
     incorrect type, which will fail? (it is worth building your source files with -Werror (\
     warnings are errors), as warnings can indicate undefined behavior which can cause this)",
-    );
+    )
 }
 
 /// The current version of this crate
